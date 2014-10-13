@@ -1,0 +1,139 @@
+<?php
+class ProcessWireDbSync extends Process implements Module, ConfigurableModule {
+
+    const PAGE_NAME = 'pw-db-sync';
+    const PERMISSION_NAME = 'db-sync';
+
+    public static function getModuleInfo() {
+        return array(
+            'title' => 'ProcessWire DB Sync',
+            'summary' => 'Sync your PW Database with another PW installation.',
+            'version' => 1,
+            'autoload' => true,
+            'singular' => true
+        );
+    }
+
+    public function __construct() {
+        // optionally set our default values before ProcessWire configures the module
+        $this->source = '';
+        $this->email = '';
+
+    }
+
+    public function init() {
+        // you can now assume that your configuration data has been populated to the module
+        // meaning you can access $this->fullname; or $this->email; in any of your module's functions
+        $this->addHookAfter('Page::loaded', $this, 'getApi');
+    }
+
+    public function ___install() {
+        $page = $this->pages->get('template=admin,name='.self::PAGE_NAME);
+        if (!$page->id) {
+            $page = new Page();
+            $page->template = $this->templates->get('admin');
+            $page->parent = $this->pages->get($this->config->adminRootPageID)->get('name=setup');
+            $page->title = 'DB Sync';
+            $page->name = self::PAGE_NAME;
+            $page->process = $this;
+            $page->save();
+        }
+        $permission = $this->permissions->get(self::PERMISSION_NAME);
+        if (!$permission->id) {
+            $p = new Permission();
+            $p->name = self::PERMISSION_NAME;
+            $p->title = $this->_('Sync database with another PW installation.');
+            $p->save();
+        }
+    }
+
+    public function ___uninstall() {
+        $permission = $this->permissions->get(self::PERMISSION_NAME);
+        if ($permission->id) {
+            $permission->delete();
+        }
+        $page = $this->pages->get('template=admin, name='.self::PAGE_NAME);
+        if ($page->id) {
+            $page->delete();
+        }
+    }
+
+    public function ___execute() {
+        $output = '';
+        $diff = $this->array_diff_assoc_recursive(json_decode($this->getRemoteData(), true), $this->getLocalData());
+        $this->processHeadline = 'DB Sync';
+        $output .= '<h2>Changed tables</h2>';
+        $table = $this->modules->get('MarkupAdminDataTable');
+        $table->headerRow(array('table name', 'number of changed rows'));
+        foreach ($diff as $key => $value) {
+            foreach ($value as $dataSet) {
+                $table->row(array($key, count($dataSet)));
+            }
+        }
+        $output .= $table->render();
+        return $output;
+    }
+
+    public function getApi() {
+        if (isset($_GET['pw-db-sync-get-content'])) {
+            echo json_encode($this->getLocalData());
+            die;
+        }
+    }
+
+    private function getLocalData() {
+        $data = array();
+        $tables = $this->db->query("SHOW TABLES");
+        while($table = $tables->fetch_array()) {
+            $data[$table[0]] = array();
+            $rows = $this->db->query("SELECT * FROM $table[0]");
+            while ($row = $rows->fetch_assoc()) {
+                $data[$table[0]][] = $row;
+            }
+        }
+        return $data;
+    }
+
+    private function getRemoteData() {
+        return file_get_contents($this->source . '?pw-db-sync-get-content');
+    }
+
+    public static function getModuleConfigInputfields(array $data) {
+        $inputfields = new InputfieldWrapper();
+
+        // ask for their full name
+        $field = wire('modules')->get('InputfieldText');
+        $field->name = 'source';
+        $field->label = "Enter the URL of the PW installation you want to sync with.";
+        if(isset($data['source'])) $field->value = $data['source'];
+        $inputfields->add($field);
+
+        // ask for an email address
+        $field = wire('modules')->get('InputfieldEmail');
+        $field->name = 'email';
+        $field->label = 'Your E-Mail Address';
+        if(isset($data['email'])) $field->value = $data['email'];
+        $inputfields->add($field);
+
+        return $inputfields;
+    }
+
+    private function array_diff_assoc_recursive($array1, $array2) {
+        $difference=array();
+        foreach($array1 as $key => $value) {
+            if( is_array($value) ) {
+                if( !isset($array2[$key]) || !is_array($array2[$key]) ) {
+                    $difference[$key] = $value;
+                } else {
+                    $new_diff = $this->array_diff_assoc_recursive($value, $array2[$key]);
+                    if( !empty($new_diff) )
+                        $difference[$key] = $new_diff;
+                }
+            } else if( !array_key_exists($key,$array2) || $array2[$key] !== $value ) {
+                $difference[$key] = $value;
+            }
+        }
+        return $difference;
+    }
+
+}
